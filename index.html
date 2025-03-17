@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wikipedia Category Graph</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        header {
+            background-color: #333;
+            color: white;
+            padding: 10px;
+            text-align: center;
+            font-size: 24px;
+        }
+        .input-container {
+            margin-top: 10px; /* Adds some space between the header and the input container */
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+        }
+        .graph-container {
+            width: 100%; /* Full width of the viewport */
+            height: calc(100vh - 100px); /* Adjust based on header + input-container */
+            overflow: auto; /* Enables both horizontal and vertical scrolling */
+            background-color: #f9f9f9; /* Optional: Gives a background for clarity */
+            border: 1px solid #ccc; /* Optional: Visual boundary */
+        }
+
+        svg {
+            width: 2000px; /* Set a large width for the SVG to simulate a big graph */
+            height: 1500px; /* Set a large height for the SVG */
+        }
+
+        .node {
+            stroke: #fff;
+            stroke-width: 1.5px;
+        }
+        .link {
+            stroke: #999;
+            stroke-opacity: 0.6;
+        }
+    </style>
+</head>
+<body>
+    <header>Wikipedia Category Graph</header>
+    <div class="input-container">
+        <label for="categoryInput">Enter Root Category:</label>
+        <input type="text" id="categoryInput" placeholder="e.g., Physics">
+        <label for="languageSelect">Language:</label>
+        <select id="languageSelect">
+            <option value="en">English</option>
+            <option value="de">German</option>
+        </select>
+        <button id="updateGraph">Update Graph</button>
+
+        <label for="maxNodesInput">Max Nodes:</label>
+        <input type="number" id="maxNodesInput" value="50">
+    </div>
+    <div class="graph-container">
+        <svg id="graph"></svg>
+    </div>
+
+    <script>
+
+        let language = "en";
+        //const baseUrl = "https://en.wikipedia.org/w/api.php?origin=*";
+
+        const languageSelect = document.getElementById("languageSelect");
+
+        // Update the selected language
+        languageSelect.addEventListener("change", () => {
+            language = languageSelect.value;
+        });
+
+        // Base URL with dynamic language selection
+        function getBaseUrl() {
+            return `https://${language}.wikipedia.org/w/api.php?origin=*`;
+        }
+
+        async function fetchSubcategories(category) {
+            const baseUrl = getBaseUrl();
+            const url = `${baseUrl}&action=query&list=categorymembers&cmtitle=Category:${category}&cmtype=subcat&format=json`;
+
+            const response = await fetch(url);
+            const data = await response.json();
+            return data.query.categorymembers.map(subcat => subcat.title.replace("Category:", ""));
+        }
+
+        async function buildCategoryGraphBFS(rootCategory, graph, maxDepth = 3, maxNodes = 50) {
+            const queue = [{ category: rootCategory, depth: 0 }];
+            const visited = new Set();
+
+            // helper to check if a node with the same id exists in the set
+            // objects are compared by reference, so we need to check the id
+            function nodeExists(graphNodes, id) {
+                for (const node of graphNodes) {
+                    if (node.id === id) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            while (queue.length > 0) {
+                const { category, depth } = queue.shift();
+
+                if (visited.has(category) || depth > maxDepth || graph.nodes.size >= maxNodes) {
+                    continue;
+                }
+
+                visited.add(category);
+
+                const subcategories = await fetchSubcategories(category);
+                subcategories.forEach(subcategory => {
+                    if (graph.nodes.size < maxNodes) {
+                        graph.links.push({ source: category, target: subcategory });
+                        //graph.nodes.add({id: category, depth: depth });
+                        //graph.nodes.add({id: subcategory, depth: depth + 1 });
+
+                        if (!nodeExists(graph.nodes, category)) {
+                            graph.nodes.add({ id: category, depth: depth });
+                        }
+                        if (!nodeExists(graph.nodes, subcategory)) {
+                            graph.nodes.add({ id: subcategory, depth: depth + 1 });
+                        }
+
+                        queue.push({ category: subcategory, depth: depth + 1 });
+                    }
+                });
+            }
+        }
+
+        async function visualizeGraph(rootCategory, maxDepth = 3, maxNodes = 50) {
+            const graph = { nodes: new Set(), links: [] };
+            await buildCategoryGraphBFS(rootCategory, graph, maxDepth, maxNodes);
+
+            graph.nodes = Array.from(graph.nodes);
+            //graph.nodes = Array.from(graph.nodes).map(name => ({ id: name }));
+
+            const svg = d3.select("#graph");
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            svg.attr("width", width).attr("height", height);
+
+            const color = d3.scaleOrdinal(d3.schemeCategory10);
+
+            const zoom = d3.zoom()
+                .scaleExtent([0.1, 10])
+                .on("zoom", ({ transform }) => g.attr("transform", transform));
+
+            svg.call(zoom);
+
+            const g = svg.append("g");
+
+            const link = g.append("g")
+                .attr("class", "links")
+                .selectAll("line")
+                .data(graph.links)
+                .enter().append("line")
+                .attr("class", "link");
+
+            const node = g.append("g")
+                .attr("class", "nodes")
+                .selectAll("circle")
+                .data(graph.nodes)
+                .enter().append("circle")
+                .attr("class", "node")
+                .attr("r", 8)
+                .attr("fill", d => color(d.depth)) // Color based on depth
+                .call(d3.drag()
+                    .on("start", (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0.3).restart();
+                        d.fx = d.x;
+                        d.fy = d.y;
+                    })
+                    .on("drag", (event, d) => {
+                        d.fx = event.x;
+                        d.fy = event.y;
+                    })
+                    .on("end", (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0);
+                        d.fx = null;
+                        d.fy = null;
+                    })
+                );
+
+            //node.append("title").text(d => d.id);
+
+            // Append text labels to each node
+            const label = g.append("g")
+                .attr("class", "labels")
+                .selectAll("text")
+                .data(graph.nodes)
+                .enter()
+                .append("text")
+                .attr("class", "label")
+                .attr("font-size", "12px")
+                .attr("fill", d => color(d.depth)) // Color labels based on depth
+                .attr("text-anchor", "middle") // Centers the text horizontally
+                .attr("dy", "-12px") // Moves the label slightly above the node
+                .text(d => d.id);
+
+
+            const simulation = d3.forceSimulation(graph.nodes)
+                .force("link", d3.forceLink(graph.links).id(d => d.id).distance(100))
+                .force("charge", d3.forceManyBody().strength(-300))
+                .force("center", d3.forceCenter(width / 2, height / 2))
+                .on("tick", () => {
+                    link
+                        .attr("x1", d => d.source.x)
+                        .attr("y1", d => d.source.y)
+                        .attr("x2", d => d.target.x)
+                        .attr("y2", d => d.target.y);
+
+                    node.attr("cx", d => d.x).attr("cy", d => d.y);
+
+                    label.attr("x", d => d.x).attr("y", d => d.y - 12); // Synchronize label position with the node
+                });
+
+        }
+
+        const input = document.getElementById("categoryInput");
+        const button = document.getElementById("updateGraph");
+        const maxNodesInput = document.getElementById("maxNodesInput");
+
+        button.addEventListener("click", () => {
+            const category = input.value.trim();
+            const maxNodes = parseInt(maxNodesInput.value, 10) || 50; // Fallback to 50 if input is invalid
+            if (category) {
+                d3.select("svg").selectAll("*").remove();
+                visualizeGraph(category, 3, maxNodes);
+            }
+        });
+
+        window.addEventListener("resize", () => {
+            d3.select("svg")
+                .attr("width", window.innerWidth)
+                .attr("height", window.innerHeight);
+        });
+
+        visualizeGraph("Physics", 3, 50);
+    </script>
+</body>
+</html>
